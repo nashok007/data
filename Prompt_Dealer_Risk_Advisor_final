@@ -1,0 +1,673 @@
+ROLE
+You are a senior data engineer creating SYNTHETIC, fully anonymized datasets for a hackathon
+prototype called "AI Dealer Risk Advisor" (GM Financial – Chile and Colombia).
+The goal is to detect Early Warnings of Early Losses at Dealer and Salesperson level.
+Do NOT use or imitate real customer data. No PII of any kind.
+GENERAL PARAMETERS
+- Countries: Chile (CL) and Colombia (CO).
+- Origination window: Jan-2025 to Aug-2026 (monthly cohorts).
+- Data cut-off (snapshot date): Sep-2026 (30-Sep-2026).
+- Volume per cohort: CL ~1,000–1,200 funded contracts; CO ~750–800 funded contracts.
+- Dealers: ~110 in CL, ~40 in CO (in both countries a few dealers concentrate most ECOs).
+- Salespersons: ~600 in total; ~10% of sellers work at more than one dealer.
+- Currency: CLP for Chile, COP for Colombia, plus a USD-equivalent field.
+- Use a fixed random seed so results are reproducible.
+- All IDs must be synthetic codes (e.g., D001, S0123, C000001, A000001).
+BUSINESS DEFINITIONS (must be respected)
+- Early Loss / ECO (Early Charge Off): contract reaching 120 consecutive days past due (DPD)
+  in one of the first 3 installments, within the first 7 months on book (MOB ≤ 7).
+  ECOs are charged off between MOB 4 and MOB 7.
+- ECO_Type:
+  FPD = first payment default (mostly charged off at MOB 4–6)
+  EPD = early payment default (mostly charged off at MOB 6–7)
+- Potential ECO: contract with > 30 DPD that will be charged off in the month shown in
+  Potential_Period if it does not pay before then. Bucket logic at Sep-2026 cut-off
+  (same for both countries):
+    Potential_Period 202610 → currently in bucket 91–120 DPD
+    Potential_Period 202611 → currently in bucket 61–90 DPD
+    Potential_Period 202612 → currently in bucket 31–60 DPD
+- A contract can be either ECO (Flag_ECO = 1) or Potential (Flag_Potential = 1), never both.
+- Early Warning monitoring starts at 30 DPD.
+- ECO Rate (cohort) = number of ECOs / number of funded contracts in the cohort.
+  Also provide ECO Rate by amount = ECO outstanding balance / financed amount.
+- ECO Concentration = dealer's share of total ECOs (count) in the country.
+- Ever X: contract that has EVER reached ≥ X DPD (X = 30, 60, 90) up to the snapshot.
+  Ever X @ n MOB: same, but only considering snapshots up to MOB n
+  (see EARLY WARNING INDICATOR TARGETS).
+- Over X: contract that is CURRENTLY ≥ X DPD at the snapshot.
+- DPD_Bucket (days_past_due at the Sep-2026 snapshot):
+    Current (0–2 DPD) | 3–30 | 31–60 | 61–90 | 91–120 | 121–150 | +150
+- First_Due_Date ≈ Purchase_Date + 30 days. A contract can never have more DPD than the
+  days elapsed between its First_Due_Date and the snapshot date.
+- Local_Tier (APP_LOCAL_TIER): internal credit risk tier. Ordered from best to worst:
+  S+ > S > A > B > B- > C > C- > D > D- > E. U = unrated / not classified
+  (companies only).
+- Vehicle_Mix: combination of brand group and condition:
+  Chevrolet/New, Chevrolet/Used, NoGM/New, NoGM/Used
+  (NoGM = MAKE_DESC ≠ 'CHEVROLET'; Used = any non-new vehicle).
+COHORT MATURITY (applies to both countries)
+- Closed cohorts (Jan-2025 to Feb-2026): MOB ≥ 7 → ECOs only, no Potentials.
+- Open cohorts with enough maturity (Mar-2026 to Jun-2026): ECOs and/or Potentials
+  according to the country targets below.
+- Immature cohorts (Jul-2026 and Aug-2026): NOT enough months on book to reach the
+  days past due required for a Potential ECO.
+    → Flag_ECO = 0 and Flag_Potential = 0 for 100% of contracts.
+    → No contract may exceed 30 DPD; only DPD buckets Current or 3–30 are allowed.
+    → Ever30 = Ever60 = Ever90 = 0 and Over30 = Over60 = Over90 = 0.
+    → Include these cohorts as funded contracts (volume, mix, segments, tiers, vehicles,
+      dealers, sellers), but EXCLUDE them from ECO and Potential rate targets and averages.
+MAXIMUM DPD BUCKET BY COHORT AT SEP-2026 (hard limit, both countries)
+  Cohort                 Max DPD bucket allowed     Notes
+  Jan-2025 – Mar-2026    +150                       all buckets possible
+  Apr-2026               121–150                    121–150 only for ECOs
+  May-2026               121–150                    121–150 only for the few ECOs; rest ≤ 91–120
+  Jun-2026               91–120                     91–120 only for early-month purchases
+                                                    (Potential_Period 202610)
+  Jul-2026               3–30
+  Aug-2026               3–30
+  No contract may be in a bucket above its cohort limit.
+DPD BUCKET CONSISTENCY RULES (apply to both countries)
+- The DPD bucket distribution targets below are measured over ALL funded contracts of
+  ALL cohorts (Jan-2025 to Aug-2026) at the Sep-2026 snapshot.
+- Because recent cohorts cannot reach high DPD (see MAXIMUM DPD BUCKET BY COHORT),
+  the high buckets must come from the mature cohorts:
+    → 121–150 and +150 come almost entirely from Jan-2025 – Mar-2026 cohorts.
+    → 31–120 come from all cohorts up to Jun-2026, with more weight on older cohorts.
+    → Jul–Aug 2026 contribute only to Current and 3–30.
+  Delinquency must follow a realistic seasoning curve: the share of contracts in ≥ 31 DPD
+  increases with months on book and is highest in the oldest cohorts. Calibrate the
+  per-cohort rates so that the TOTAL portfolio matches the country targets.
+- ECOs (Flag_ECO = 1) are ALWAYS in 121–150 or +150:
+    → ECOs charged off in the most recent month (ECO_Period = 202609) → mostly 121–150.
+    → ECOs charged off earlier → +150 (DPD keeps accruing after charge-off:
+      DPD ≈ 120 + days since charge-off).
+- Potentials (Flag_Potential = 1) are ALWAYS in 31–60, 61–90 or 91–120, according to
+  Potential_Period (202612 → 31–60, 202611 → 61–90, 202610 → 91–120).
+- ECOs and Potentials do NOT fill the delinquent buckets alone. The remainder of
+  31–60 / 61–90 / 91–120 / 121–150 / +150 must be filled with NON-early-loss delinquent
+  contracts (Flag_ECO = 0, Flag_Potential = 0), i.e., contracts that became delinquent
+  AFTER the first 3 installments or after MOB 7 (regular credit delinquency / late
+  charge-offs). Mark them with Late_Delinquency_Flag = 1 and Contract_Status =
+  "Delinquent" or "Charged Off (Late)". Late delinquency also respects the cohort
+  maximum DPD and, by definition, mostly comes from cohorts up to Mar-2026.
+- Contracts in 3–30 and Current can come from any cohort.
+- Contracts that reached ≥ 30 DPD in the past and later cured (back to Current / 3–30)
+  must exist, so that the Ever targets (EARLY WARNING INDICATOR TARGETS) are met while
+  the Sep-2026 DPD bucket distribution also holds.
+======================================================================
+CHILE CALIBRATION
+======================================================================
+ECO AND POTENTIAL TARGETS
+1. Closed cohorts (Jan-2025 to Feb-2026):
+   - ECO rate per cohort between 1.7% and 2.5% (vary month to month).
+   - Simple average of closed cohorts ≈ 2.03%. No Potentials in closed cohorts.
+2. Open cohorts (Mar-2026 to Jun-2026):
+   - Potential ECO rate: Mar-2026 0.4% | Apr-2026 3.9% | May-2026 2.9% | Jun-2026 12.7%
+   - Already charged-off ECOs: Mar ≈ 1.8% | Apr ≈ 1.1% | May ≈ 0.1% | Jun = 0%
+   - Potential_Period distribution:
+       Mar-2026: 100% → 202610
+       Apr-2026: ~30% → 202610, ~70% → 202611
+       May-2026: ~25% → 202610, ~20% → 202611, ~55% → 202612
+       Jun-2026: ~5% → 202610, ~45% → 202611, ~50% → 202612
+3. Immature cohorts (Jul-2026 and Aug-2026): no ECOs and no Potentials (see COHORT MATURITY).
+- ECO mix: ~58% FPD / ~42% EPD.
+- Potential balance ≈ 96–100% of financed amount; ECO balance ≈ 102–107%.
+DPD BUCKET DISTRIBUTION – ALL FUNDED CONTRACTS, ALL COHORTS, AT SEP-2026 (±0.3 pp tolerance)
+    Current (0–2)   79.48%
+    3–30             9.73%
+    31–60            3.39%
+    61–90            1.39%
+    91–120           1.01%
+    121–150          0.40%
+    +150             4.59%
+  (Total ≥ 31 DPD ≈ 10.79%; total ≥ 121 DPD ≈ 4.99%.)
+  Composition guidance:
+  - 121–150 and +150 contain 100% of ECOs (≈ 1.6% of all contracts) plus late
+    charge-offs / late delinquency (Late_Delinquency_Flag = 1) for the remainder,
+    coming from Jan-2025 – Mar-2026 cohorts.
+  - 31–120 contain 100% of Potentials (≈ 1.0% of all contracts) plus late delinquency
+    for the remainder.
+  - Because Jul–Aug 2026 (and partially Apr–Jun 2026) cannot reach high DPD, the
+    ≥ 121 DPD share within the Jan-2025 – Mar-2026 cohorts must be higher than 4.99%
+    (≈ 6–7%) so that the total portfolio reaches the target.
+PORTFOLIO MIX – ALL FUNDED CONTRACTS (must be matched)
+- Economic activity (ACCOUNT_TYPE_DESC):
+    Dependiente_CL                   66.68%
+    Feriante_CL                       0.15%
+    Fuerzas_Armadas_Policial_CL       1.08%
+    Independiente_CL                  9.07%
+    Jubilado_Pensionado_CL            6.10%
+    Sin_Ingresos_CL                   2.86%
+    Taxista_CL                        1.14%
+    Companies                        12.93%
+- Fraud score segment (resulting from the Chile scorecard below, ±0.5 pp tolerance):
+    Segment 1 (H01 - High)              0.09%
+    Segment 2 (H02 - High)              0.38%
+    Segment 3 (H03 - High)              6.12%
+    Segment 4 (H04 - High)              9.89%
+    Segment 5 (M05 - Medium)           32.40%
+    Segment 6 (L06 - Low / Premium)    38.16%
+    Companies                          12.96%  (not scored, no segment assigned)
+  Customer_Type = Company must match Economic_Activity = Companies and
+  Fraud_Segment = null (use a single company share of ~12.9–13.0%).
+- Local risk tier (APP_LOCAL_TIER), ±0.5 pp tolerance:
+    Tier   Individuals   Companies
+    S+        0.03%          –
+    S         6.47%        6.93%
+    A        14.75%       15.94%
+    B        11.60%       10.85%
+    B-       12.73%       12.01%
+    C        15.18%        9.70%
+    C-       15.25%       12.01%
+    D        12.13%        9.24%
+    D-       10.79%        6.00%
+    E         1.07%        1.15%
+    U          –          16.17%  (unrated company; GMF_Score may be null)
+  Local_Tier must be consistent with APP_GMF_SCORE (monotonic: a better tier always has a
+  higher GMF score). Approximate reference bands observed in the historical base:
+  S ≈ 905+, A ≈ 855–904, B ≈ 835–854, B- ≈ 812–834, C ≈ 788–811, C- ≈ 765–787,
+  D ≈ 741–764, D- ≈ 718–740, E ≈ ≤ 717 (S+ above S).
+  Because APP_GMF_SCORE is also a scorecard input (≥ 830 / 797–829 / 774–796 / ≤ 773),
+  the tier mix and the fraud segment mix must be generated jointly so both targets hold.
+- Vehicle mix (Make × NEW_USED_CD), ±0.5 pp tolerance:
+    Chevrolet / New     81.33%   → MODEL_TYPE: COMMERCIAL / ENTRY / INTERMEDIATE /
+                                   PREMIUM / TRUCKS (only models listed in rules 4–9)
+    Chevrolet / Used     8.05%   → MODEL_TYPE: USED GM
+    NoGM / New           0.20%   → MODEL_TYPE: NEW NO GM
+    NoGM / Used         10.42%   → MODEL_TYPE: USED NO GM
+  (Total Used ≈ 18.47%; total NoGM ≈ 10.62%.)
+CHILE FRAUD SCORECARD (individuals only – segment MUST be derived, not randomly assigned)
+Generate the input attributes for each application, compute the points of each of the 9
+variables, sum them into FRAUD_SCORE (theoretical range 449–779) and assign the segment with
+the cut-offs below. Tune the attribute distributions so the resulting segment mix matches
+the portfolio targets above. The score is ALWAYS computed with the ORIGINAL APPLICATION
+values (original down payment, finance amount and LTV, before any counter-offer).
+1. CSP_vs_MSRP = Cash Selling Price / MSRP × 100, rounded to 1 decimal
+   ≥ 104.4 → 50 | 95.0–104.3 → 55 | 87.5–94.9 → 65 | ≤ 87.4 → 72
+2. REGION_NM (customer region)
+   Araucanía, Atacama, Los Ríos                                                → 122
+   Aysén, Antofagasta, Coquimbo, Los Lagos, Maule, Ñuble, Tarapacá, Valparaíso  → 74
+   Arica, Biobío, Libertador B. O'Higgins, Magallanes, Metropolitana           → 63
+   (Metropolitana must remain ~55% of the portfolio.)
+3. EQFX_INQ_3M_vs_5A = bureau inquiries in last 3 months / inquiries in last 5 years × 100
+   ≥ 53.1 → 46 | 28.6–53.0 → 60 | 3.9–28.5 → 67 | ≤ 3.8 → 70
+4. INCOME_vs_EQFX_SCORE = Monthly Income (CLP) / EQFX_SCORE, rounded to 1 decimal
+   ≥ 5,196.5 → 48 | 155.3–5,196.4 → 68 | ≤ 155.2 → 87
+5. ACCOUNT_TYPE_DESC
+   Dependiente_CL, Fuerzas_Armadas_Policial_CL, Independiente_CL, Sin_Ingresos_CL → 70
+   Feriante_CL, Jubilado_Pensionado_CL, Taxista_CL                              → 38
+6. APP_GMF_SCORE
+   ≥ 830 → 92 | 797–829 → 70 | 774–796 → 64 | ≤ 773 → 58
+7. EQFX_SCORE (Equifax bureau score)
+   ≥ 907 → 79 | 817–906 → 70 | 603–816 → 65 | ≤ 602 → 59
+8. LTV = Total Amount Financed (original application) / MSRP × 100, rounded to 1 decimal
+   ≥ 93.2 → 37 | 91.5–93.1 → 43 | 85.3–91.4 → 53 | 72.7–85.2 → 64 |
+   63.9–72.6 → 78 | ≤ 63.8 → 104
+9. MODEL_TYPE (Chile) – evaluate in this exact order (first match wins):
+   1) NEW_USED_CD = 'Used' AND MAKE_DESC ≠ 'CHEVROLET'               → USED NO GM
+   2) NEW_USED_CD = 'Used'                                            → USED GM
+   3) NEW_USED_CD = 'New'  AND MAKE_DESC ≠ 'CHEVROLET'               → NEW NO GM
+   4) MODEL_DESC like 'N400'                                          → COMMERCIAL
+   5) MODEL_DESC like 'MONTANA' / 'ONIX' / 'SAIL'                     → ENTRY
+   6) MODEL_DESC like 'CAPTIVA' / 'GROOVE' / 'SPIN' / 'TRACKER'       → INTERMEDIATE
+   7) MODEL_DESC like 'BLAZER' / 'BOLT' / 'COLORADO' / 'EQUINOX'      → PREMIUM
+   8) MODEL_DESC like 'SILVERADO' / 'SUBURBAN' / 'TAHOE' / 'TRAVERSE' → PREMIUM
+   9) MODEL_DESC like 'FRR' / 'FTR' / 'FVR' / 'NKR' / 'NPR' / 'NPS' / 'NQR' → TRUCKS
+   NEW_USED_CD in Chile only takes values 'New' or 'Used' (seminew vehicles = 'Used').
+   New Chevrolet vehicles must be generated ONLY with models covered by rules 4–9,
+   so every contract gets a MODEL_TYPE.
+   Points: COMMERCIAL → 83 | INTERMEDIATE / TRUCKS → 79 | ENTRY → 65 |
+           USED GM → 57 | NEW NO GM / PREMIUM / USED NO GM → 50
+SEGMENT CUT-OFFS AND TREATMENT (Chile)
+  Risk Level  Segment  Fraud_Score   Treatment
+  Low         L06      ≥ 632         LOW RISK (Premium) – Waiver of address proof
+  Medium      M05      593–631       STANDARD PROCESS (no extra documents)
+  High        H04      582–592       PHONE VERIFICATION
+  High        H03      563–581       REQUEST DOWN PAYMENT 30%
+  High        H02      552–562       REQUEST DOWN PAYMENT 40%
+  High        H01      ≤ 551         AUTO-REJECTION
+  Companies   null     not scored    NOT SEGMENTED (COMPANY)
+FRAUD SEGMENT TREATMENT RULES (deterministic – must hold for 100% of contracts)
+- H01 → Decision = Rejected (auto-reject) in APPLICATION_DETAIL. The 0.09% among funded
+  contracts must be flagged as Policy_Exception = Y.
+- H02 → counter-offer: Final_Down_Payment_Pct ≥ 40% for every funded contract.
+- H03 → counter-offer: Final_Down_Payment_Pct ≥ 30% for every funded contract.
+  Keep both Application_Down_Payment_Pct (used for the score) and Final_Down_Payment_Pct
+  (used for the contract). Final Finance_Amount and Final_LTV are recalculated after the
+  counter-offer, but the score and segment do NOT change.
+- H04 → Verification_Phone_Flag = Y.
+- M05 → Standard Process, no additional verification.
+- L06 → Low Risk (Premium), address proof waived (Address_Proof_Waived = Y).
+- Companies → Fraud_Segment = null, Fraud_Score = null, Treatment = "NOT SEGMENTED (COMPANY)".
+RISK PROFILES (ECO / Potential vs. good contracts)
+- Segment mapping used to calibrate from the historical ECO/Potential base:
+    FRAUDSEGMENT "No"                          → Segment 5 / M05 (Standard Process)
+    FRAUDSEGMENT "Premium" (Waiver / Low Risk) → Segment 6 / L06 (Low Risk)
+    Segmento 2 / 3 / 4                         → H02 / H03 / H04
+    Legacy segments (5, 8, 15, 17, 21, 28, 41, 45, 57…) with FRAUDTREATMENT2 = High Risk
+      → mapped by treatment: Counter Offer DP > 40% → H02,
+        Counter Offer DP > 30% → H03, Phone verification → H04
+    Companies → no segment (Fraud_Segment = null), regardless of FRAUDSEGMENT value
+- Fraud segment mix among ECO/Potential (approx., must be matched ±2 pp):
+    H01    0%   (only as rare policy exception)
+    H02   ~3%
+    H03  ~10%
+    H04  ~17%
+    M05  ~55%   (Standard Process)
+    L06   ~7%   (Low Risk / Premium)
+    Companies ~8% (no segment)
+  vs. portfolio: High-risk H02–H04 ≈ 30% among ECO/Potential vs. ≈ 16% in the portfolio;
+  L06 strongly under-represented (~7% vs. ~38%); M05 over-represented (~55% vs. ~32%).
+- Treatment among ECO/Potential:
+    Standard Process ~55% | High Risk (DP 40% / DP 30% / Phone Verification) ~30% |
+    Low Risk ~7% | Not Segmented (Company) ~8%
+- Fraud typology: Skip ~42%, No Payment Intention ~33%, Credit Abuse ~13%,
+  Adverse Not Disclosed ~7%, Altered Documents ~3%, Straw Buyer ~2%.
+- Local tier among ECO/Potential: concentrated in C, C-, D, D- (~80%) vs. ~53% of
+  individuals in the portfolio; S/A clearly under-represented (≈ 5% vs. ≈ 21%).
+- GMF score: ECO/Potential ≈ 773; good contracts ≈ 800.
+- Down payment (original application): ECO/Potential ≈ 30% (mostly ]20–30]);
+  good contracts ≈ 37%. (Final down payment always respects the 40% / 30% minimum
+  for H02 and H03.)
+- PTI: ECO/Potential ≈ 29–30%; good contracts ≈ 23%.
+- Vehicle among ECO/Potential: mostly Chevrolet; ~70% new / ~30% used
+  (used vehicles over-represented vs. ~18.5% in the portfolio, mainly NoGM/Used);
+  term mostly 37–48 months.
+- Geography: ~55% Metropolitana; rest Valparaíso, Biobío, O'Higgins, Maule, Ñuble,
+  Los Lagos, etc.
+- Dealer concentration: top dealer ≈ 15% of ECOs; ~20 dealers with no ECO history.
+- Late delinquency (non-ECO, ≥ 31 DPD): risk profile in between good contracts and
+  ECO/Potential (weaker tiers and higher PTI than good contracts, but no fraud typology).
+- Note: many ECO/Potential cases fall in M05 or L06 even with bad outcomes. This is
+  expected: the scorecard does not catch all fraud, and the agent must detect those cases
+  through dealer/seller patterns.
+======================================================================
+COLOMBIA CALIBRATION
+======================================================================
+ECO AND POTENTIAL TARGETS
+1. Closed cohorts (Jan-2025 to Feb-2026):
+   - ECO rate per cohort between 0.7% and 0.9% (vary month to month).
+   - Simple average of closed cohorts ≈ 0.8%. No Potentials in closed cohorts.
+2. Open cohorts (Mar-2026 to Jun-2026):
+   - Potential ECO rate: Mar-2026 0.03% | Apr-2026 0.30% | May-2026 0.37% | Jun-2026 1.70%
+   - Already charged-off ECOs: Mar-2026 only a few cases; Apr–Jun 2026 none.
+   - Potential_Period distribution:
+       Apr-2026: ~33% → 202610, ~67% → 202611
+       May-2026: ~5% → 202610, ~30% → 202611, ~65% → 202612
+       Jun-2026: ~12% → 202611, ~88% → 202612
+3. Immature cohorts (Jul-2026 and Aug-2026): no ECOs and no Potentials (see COHORT MATURITY).
+- ECO mix: ~61% FPD / ~39% EPD.
+  FPD charged off mostly at MOB 5–6; EPD mostly at MOB 6–7.
+DPD BUCKET DISTRIBUTION – ALL FUNDED CONTRACTS, ALL COHORTS, AT SEP-2026 (±0.3 pp tolerance)
+    Current (0–2)   79.62%
+    3–30            12.47%
+    31–60            3.22%
+    61–90            1.14%
+    91–120           0.60%
+    121–150          0.39%
+    +150             2.55%
+  (Total ≥ 31 DPD ≈ 7.90%; total ≥ 121 DPD ≈ 2.94%.)
+  Composition guidance:
+  - 121–150 and +150 contain 100% of ECOs (≈ 0.6% of all contracts) plus late
+    charge-offs / late delinquency (Late_Delinquency_Flag = 1) for the remainder,
+    coming from Jan-2025 – Mar-2026 cohorts.
+  - 31–120 contain 100% of Potentials (≈ 0.1% of all contracts) plus late delinquency
+    for the remainder.
+  - Because Jul–Aug 2026 (and partially Apr–Jun 2026) cannot reach high DPD, the
+    ≥ 121 DPD share within the Jan-2025 – Mar-2026 cohorts must be higher than 2.94%
+    (≈ 3.5–4%) so that the total portfolio reaches the target.
+PORTFOLIO MIX – ALL FUNDED CONTRACTS (must be matched)
+- Economic activity (OCCUPATION):
+    Fijo                      4.6%
+    Indefinido               32.0%
+    Prestador                13.7%
+    Independiente (informal) 21.4%
+    Independiente Formal     15.1%
+    Pensionado                5.2%
+    Rentista                  1.7%
+    Transportador             2.7%
+    Companies                 3.5%
+- Fraud score segment (resulting from the scorecard below, ±0.5 pp tolerance):
+    Segment 1 (H01 / S01 - High)    0.13%
+    Segment 2 (H02 / S02 - High)    2.12%
+    Segment 3 (H03 / S03 - High)    1.89%
+    Segment 4 (H04 / S04 - High)    7.15%
+    Segment 5 (M05 / S05 - Medium) 28.87%
+    Segment 6 (L06 / S06 - Low)    56.32%
+    Companies (S01 - SME)           3.51%  (no fraud score segment)
+- Local risk tier (APP_LOCAL_TIER), ±0.5 pp tolerance:
+    Tier   Individuals   Companies
+    S+       48.68%          –
+    S        13.14%          –
+    A        15.06%        3.77%
+    B        13.34%       33.02%
+    C         7.14%       16.04%
+    D         2.61%       10.38%
+    E         0.03%          –
+    U          –          36.79%  (unrated company; GMF_Score may be null)
+  (Colombia uses tiers S+, S, A, B, C, D, E, U only – no B-, C-, D- tiers.)
+  Local_Tier must be consistent with APP_GMF_SCORE on the Colombia scale
+  (monotonic: a better tier always has a higher GMF score).
+- Vehicle mix (Make × NEW_USED_CD), ±0.5 pp tolerance:
+    Chevrolet / New     77%   → MODEL_TYPE: COMMERCIAL / ENTRY / TRUCK / PREMIUM /
+                                PICKUP / SUV / OTHER
+    Chevrolet / Used     8%   → MODEL_TYPE: USED GM
+    NoGM / New          11%   → MODEL_TYPE: NEW NO GM
+    NoGM / Used          4%   → MODEL_TYPE: USED NO GM
+  "Used" includes both Seminew and Used values of NEW_USED_CD.
+  (Total Used ≈ 12%; total NoGM ≈ 15%.)
+COLOMBIA FRAUD SCORECARD (individuals only – segment MUST be derived, not randomly assigned)
+Generate the input attributes for each application, compute the points of each variable,
+sum them into FRAUD_SCORE (theoretical range 536–813) and assign the segment with the
+cut-offs below. Tune the attribute distributions so the resulting segment mix matches
+the portfolio targets above.
+1. TOP_DLR_IND (dealer number in the "top dealers" list)
+   Flag 7 synthetic CO dealers as Top_Dealer = 'Y' (they represent ~28% of ECO/Potential).
+   Y → 75 pts | N → 98 pts
+2. MODEL_TYPE (Asset type + Make + Variant)
+   - Not new + Make ≠ Chevrolet → USED NO GM
+   - Not new (Chevrolet) → USED GM
+   - New + Make ≠ Chevrolet → NEW NO GM
+   - Variant N300, N400, MS → COMMERCIAL
+   - Variant BEAT, CHEVY, CRUZE, JOY, ONIX, SAIL, SONIC, SPARK → ENTRY
+   - Variant FRR, FTR, FVR, FVZ, NHR, NKR, NLR, NNR, NPR, NQR, NRR → TRUCK
+   - Variant BLAZER, BOLT, CAMARO, EQUINOX, TAHOE, TRAVERSE → PREMIUM
+   - Variant COLORADO, MONTANA, SILVERADO → PICKUP
+   - Variant CAPTIVA, SPIN, TRACKER → SUV
+   - Otherwise → OTHER
+   Points: TRUCK / PICKUP / USED NO GM / NEW NO GM / OTHER → 79
+           USED GM / COMMERCIAL / ENTRY → 97
+           PREMIUM / SUV → 105
+3. OCCUPATION
+   - Asalariado + contract Fijo → FIJO
+   - Asalariado + contract Prestación → PRESTADOR
+   - Asalariado (other) → INDEFINIDO
+   - Pensionado → PENSIONADO
+   - Rentista → RENTISTA
+   - Transport activity → TRANSPORTADOR
+   - Independent with Chamber of Commerce = Yes → INDEPENDIENTE FORMAL
+   - Otherwise → INDEPENDIENTE (informal)
+   Points: INDEPENDIENTE → 83
+           PRESTADOR / INDEPENDIENTE FORMAL / PENSIONADO → 88
+           FIJO / INDEFINIDO / TRANSPORTADOR / RENTISTA → 101
+4. GMF_EXP_IND (previous experience with GMF): GOOD → 148 | BAD → 85 | NONE → 85
+   (most applicants should be NONE; GOOD only for a minority of repeat customers)
+5. EXPN_SCORE (bureau CB score; if missing or < 300 then 1)
+   ≤ 619 → 80 | 620–875 → 89 | ≥ 876 → 119
+   (ECO/Potential average CB score ≈ 730, median ≈ 740)
+6. INCOME_vs_EXPN_SCORE = INCOME / EXPN_SCORE, rounded to 1 decimal
+   INCOME = Validated income if available, otherwise Net Monthly Income (COP)
+   ≤ 19,741.4 → 97 | 19,741.5–43,989.1 → 72 | ≥ 43,989.2 → 65
+7. LTV = Total Amount Financed / MSRP × 100, rounded to 1 decimal
+   (MSRP = system vehicle valuation; if missing, manual valuation)
+   ≤ 74.6 → 145 | 74.7–86.7 → 93 | ≥ 86.8 → 69
+VALIDA_INGRESO (selects the cut-off row)
+- OCCUPATION not in (PENSIONADO, FIJO, INDEFINIDO, PRESTADOR) → 'N/A'
+- Validated income missing → 'No Information'
+- (Monthly Income / Validated Income) − 1 ≤ 20 → '<= 20'
+- (Monthly Income / Validated Income) − 1 > 20 → '> 20'
+SEGMENT CUT-OFFS (apply in order H01 → H02 → H03 → H04 → M05 → L06;
+a blank means that segment does not exist for that row)
+  VALIDA_INGRESO   H01      H02      H03      H04      M05      L06
+  N/A              ≤ 545    ≤ 593    ≤ 597    ≤ 628    ≤ 679    ≥ 680
+  <= 20            ≤ 600    –        ≤ 618    –        ≤ 636    ≥ 637
+  > 20             –        –        ≤ 621    –        ≤ 648    ≥ 649
+  No Information   ≤ 541    ≤ 596    –        ≤ 629    –        ≥ 630
+RISK CLASSIFICATION & DISPLAY
+  Verification type 1–4 → High   → S01 / S02 / S03 / S04 - High
+  Verification type 5   → Medium → S05 - Medium
+  Verification type 6   → Low    → S06 - Low
+  Downgrade to S05 - Medium: MODEL_TYPE = TRUCK, or applications with 1+ policy exceptions
+  Verification type 7   → Medium → S01 - SME (companies; not scored, Fraud_Segment = null)
+  (Types 8–11 Retanqueo / Reestructurado / Refinanciado / Diamante: do not generate.)
+VERIFICATION / TREATMENT RULES (must hold for 100% of contracts)
+  High + OCCUPATION = Independiente + City_Match = YES → FIELD VISIT (Document: Full)
+  High + OCCUPATION = Independiente + City_Match = NO  → PHONE VERIFICATION (Complete, Document: Full)
+  High + any other occupation                          → PHONE VERIFICATION (Complete, Document: Full)
+  Medium (S05)                                         → STANDARD PROCESS (Document: Full)
+  Low (S06)                                            → LOW RISK / CRÉDITO EXPRESS (No Income Support)
+  Companies (S01 - SME)                                → NOT SEGMENTED (COMPANY), Medium
+  City_Match = customer city equals dealer city.
+RISK PROFILES (ECO / Potential vs. good contracts)
+- Fraud typology (ECOs): No Payment Intention ~47%, Credit Abuse ~21%, Skip ~21%,
+  Misrepresentation Detail ~8%, Straw Buyer / Shell Company ~3%.
+- Risk classification among ECO/Potential: Medium ~38%, High ~36%, Low ~26%
+  (portfolio High is only ~11% → High strongly over-represented; Low ~26% vs. ~56%).
+- Occupation among ECO/Potential: Independiente (informal) ~27%, Prestador ~26%,
+  Independiente Formal ~21%, Indefinido ~19%, Transportador ~3%, Pensionado ~2%,
+  Rentista ~1%, Fijo ~1%.
+- Top dealers (TOP_DLR_IND = Y) concentrate ~28% of ECO/Potential; the largest one ≈ 17%.
+- Local tier among ECO/Potential: A ~24%, B ~23%, C ~17%, S ~15%, S+ ~10%, D ~9%, U ~2%
+  (vs. portfolio: S+ strongly under-represented ~10% vs. ~49%; B, C and D over-represented).
+- GMF score (Colombia scale): ECO/Potential average ≈ 610.
+- Down payment: ECO/Potential average ≈ 22% (mostly 10–30%; ~21% between 0–10%).
+- PTI: ECO/Potential average ≈ 34%.
+- Term: ~88% between 49 and 60 months.
+- Vehicle among ECO/Potential: ~72% Chevrolet; New ~70% / Seminew ~17% / Used ~13%
+  (used/seminew over-represented ~30% vs. ~12% in the portfolio; NoGM ~28% vs. ~15%);
+  segment Utility ~35%, Small ~29%, Pick Up ~13%, Premium ~12%, Heavy Truck ~7%.
+- Customer: ~98% individual among ECO/Potential (companies under-represented vs. 3.5%).
+- Geography (region): Costa ~27%, Bogotá ~19%, Santander ~13%, Eje Cafetero ~11%,
+  Antioquia ~10%, Valle/Nariño ~8%, Cundinamarca ~5%, Boyacá ~3%.
+- Dealer concentration: ~30 dealers have ECO/Potential cases.
+- Late delinquency (non-ECO, ≥ 31 DPD): risk profile in between good contracts and
+  ECO/Potential (weaker tiers and higher PTI than good contracts, but no fraud typology).
+- Good contracts: healthier profile (higher scorecard points, mostly S05–S06,
+  more employees Fijo/Indefinido, lower LTV, higher CB score, mostly S+/S tiers,
+  mostly new Chevrolet), keeping the same scales.
+======================================================================
+EARLY WARNING INDICATOR TARGETS (EVER / OVER) – BOTH COUNTRIES
+======================================================================
+A) Over indicators (current DPD at Sep-2026, all funded contracts, all cohorts)
+   Derived directly from the DPD bucket targets – do NOT generate independently.
+     Over30 = 31–60 + 61–90 + 91–120 + 121–150 + +150 → CL 10.78% | CO 7.90%
+     Over60 = 61–90 + 91–120 + 121–150 + +150          → CL  7.39% | CO 4.68%
+     Over90 = 91–120 + 121–150 + +150                  → CL  6.00% | CO 3.54%
+B) Ever indicators by vintage at fixed Months on Book (MOB)
+   - Definition: EverX@nMOB = # contracts of the vintage that reached > X DPD at any
+     monthly snapshot up to MOB n / # funded contracts of the vintage (count-based).
+   - Generate the monthly DPD history in PERFORMANCE_DETAIL so these targets are met
+     per vintage and country (tolerance ±0.3 pp).
+   - null = the vintage has not yet reached that MOB at the Sep-2026 cut-off.
+   - Ever30@2MOB is a synthetic indicator ≈ 85% of Ever30@3MOB of the same vintage.
+   CHILE (CL)
+   Vintage | E30@2MOB | E30@3MOB | E30@6MOB | E30@9MOB | E60@6MOB | E60@9MOB
+   Jan-25  |  4.33%   |  5.10%   |  8.27%   | 10.67%   |  5.29%   |  6.63%
+   Feb-25  |  3.17%   |  3.73%   |  7.00%   | 11.09%   |  3.50%   |  5.60%
+   Mar-25  |  2.35%   |  2.77%   |  6.40%   | 10.78%   |  3.52%   |  5.23%
+   Apr-25  |  4.71%   |  5.54%   |  9.84%   | 14.59%   |  5.66%   |  8.14%
+   May-25  |  3.26%   |  3.83%   |  9.15%   | 13.07%   |  4.20%   |  8.12%
+   Jun-25  |  2.31%   |  2.72%   |  8.50%   | 13.51%   |  3.70%   |  6.86%
+   Jul-25  |  3.16%   |  3.72%   | 10.18%   | 14.09%   |  4.89%   |  8.81%
+   Aug-25  |  3.33%   |  3.92%   |  8.57%   | 12.41%   |  3.44%   |  5.84%
+   Sep-25  |  3.87%   |  4.55%   |  8.86%   | 13.04%   |  5.04%   |  7.63%
+   Oct-25  |  4.91%   |  5.78%   | 10.95%   | 15.52%   |  5.27%   |  7.81%
+   Nov-25  |  2.93%   |  3.45%   |  8.78%   | 11.39%   |  3.66%   |  6.48%
+   Dec-25  |  3.37%   |  3.97%   |  7.50%   |  null    |  3.97%   |  null
+   Jan-26  |  3.43%   |  4.04%   |  7.34%   |  null    |  3.72%   |  null
+   Feb-26  |  2.32%   |  2.73%   |  8.46%   |  null    |  3.41%   |  null
+   Mar-26  |  3.11%   |  3.66%   |  null    |  null    |  null    |  null
+   Apr-26  |  3.49%   |  4.11%   |  null    |  null    |  null    |  null
+   May-26  |  2.26%   |  2.66%   |  null    |  null    |  null    |  null
+   COLOMBIA (CO)
+   Vintage | E30@2MOB | E30@3MOB | E30@6MOB | E30@9MOB | E60@6MOB | E60@9MOB
+   Jan-25  |  1.03%   |  1.21%   |  2.56%   |  4.99%   |  1.08%   |  2.02%
+   Feb-25  |  2.33%   |  2.74%   |  5.33%   |  8.07%   |  2.31%   |  3.60%
+   Mar-25  |  1.40%   |  1.65%   |  3.99%   |  6.34%   |  1.93%   |  2.89%
+   Apr-25  |  1.40%   |  1.65%   |  4.70%   |  6.86%   |  2.41%   |  4.45%
+   May-25  |  2.35%   |  2.77%   |  5.68%   |  7.28%   |  2.91%   |  3.93%
+   Jun-25  |  1.65%   |  1.94%   |  4.05%   |  6.80%   |  2.43%   |  3.72%
+   Jul-25  |  1.40%   |  1.65%   |  4.62%   |  6.38%   |  2.64%   |  3.85%
+   Aug-25  |  1.53%   |  1.80%   |  5.68%   |  9.42%   |  2.63%   |  6.09%
+   Sep-25  |  1.63%   |  1.92%   |  5.63%   | 10.36%   |  2.43%   |  4.99%
+   Oct-25  |  1.61%   |  1.90%   |  4.70%   |  7.20%   |  2.70%   |  4.20%
+   Nov-25  |  1.93%   |  2.27%   |  6.19%   |  9.72%   |  2.40%   |  4.92%
+   Dec-25  |  0.57%   |  0.67%   |  4.81%   |  null    |  2.12%   |  null
+   Jan-26  |  0.92%   |  1.08%   |  4.02%   |  null    |  1.55%   |  null
+   Feb-26  |  1.48%   |  1.74%   |  4.41%   |  null    |  1.47%   |  null
+   Mar-26  |  1.46%   |  1.72%   |  null    |  null    |  null    |  null
+   Apr-26  |  0.91%   |  1.07%   |  null    |  null    |  null    |  null
+   May-26  |  1.84%   |  2.17%   |  null    |  null    |  null    |  null
+   Jun-26 (both countries): no explicit target; Ever values must be derived from its DPD
+     history and stay consistent with its Potential rate (Potentials are > 30 DPD).
+   Jul-26 and Aug-26 (both countries): all Ever indicators = 0 (not enough maturity).
+C) Consistency rules
+   - Per vintage: E30@2MOB ≤ E30@3MOB ≤ E30@6MOB ≤ E30@9MOB; E60@6MOB ≤ E60@9MOB.
+   - E60@nMOB ≤ E30@nMOB for the same MOB.
+   - EverX ≥ OverX; Ever90 ≥ ECO rate of the vintage.
+   - Chile Ever levels must remain clearly higher than Colombia, as in the tables.
+======================================================================
+DATASETS TO CREATE (CSV, one file each)
+======================================================================
+1. DEALER_MASTER
+   Dealer_ID, Dealer_Name (fictional), Country, Region, City, Zone, Dealer_Group, Brand,
+   Dealer_Size (Small/Medium/Large), Top_Dealer_Ind (CO: Y/N), Active_Since, Status
+2. SALESPERSON_MASTER
+   Seller_ID, Dealer_ID, Country, Start_Date, Status
+3. APPLICATION_DETAIL (origination)
+   Application_ID, Application_Version, Contract_ID (null if not funded), Dealer_ID, Seller_ID,
+   Country, Application_Date, Decision (Approved/Conditionally Approved/Rejected/Actioned),
+   Funded_Flag, Purchase_Date, Cohort (YYYYMM), Product_Type, New_Used_Cd
+   (CL: New/Used; CO: New/Seminew/Used), Make_Desc, Model_Desc, Variant,
+   Vehicle_Mix (Chevrolet/New, Chevrolet/Used, NoGM/New, NoGM/Used), Vehicle_Segment,
+   Plan_Type, Customer_Type (Individual/Company), Economic_Activity / Occupation,
+   Chamber_of_Commerce (CO: Y/N), Contract_Type, Age_Band, Customer_Region, Customer_City,
+   City_Match (Y/N), Monthly_Income, Validated_Income, GMF_Score,
+   Local_Tier (CL: S+/S/A/B/B-/C/C-/D/D-/E/U; CO: S+/S/A/B/C/D/E/U), Cash_Price, MSRP,
+   Application_Down_Payment_Pct, Final_Down_Payment_Pct, Down_Payment_Amt,
+   Application_Finance_Amount, Final_Finance_Amount, Application_LTV, Final_LTV, Term_Months,
+   Interest_Rate, Installment, PTI, Policy_Exception_Count, Policy_Exception (Y/N),
+   Fraud_Score, Risk_Segment (H01–H04 / M05 / L06 / null), Risk_Classification (High/Medium/Low),
+   Fraud_Treatment (CL: Auto-Reject / Down Payment 40% / Down Payment 30% /
+   Phone Verification / Standard Process / Low Risk – Address Proof Waived /
+   Not Segmented (Company);
+   CO: Field Visit / Phone Verification / Standard Process / Low Risk / Not Segmented (Company)),
+   Verification_Phone_Flag, Verification_Field_Visit_Flag, Address_Proof_Waived, Document_Flag,
+   Model_Type,
+   CL scorecard fields: EQFX_Score, EQFX_Inq_3M, EQFX_Inq_5A, CSP_vs_MSRP, EQFX_Inq_3M_vs_5A,
+   Income_vs_EQFX_Score, Pts_CSP_vs_MSRP, Pts_Region, Pts_EQFX_Inq, Pts_Income_vs_EQFX,
+   Pts_Account_Type, Pts_GMF_Score, Pts_EQFX_Score, Pts_LTV, Pts_Model_Type,
+   CO scorecard fields: CB_Score, GMF_Exp_Ind (GOOD/BAD/NONE), Pts_Top_Dlr, Pts_Model_Type,
+   Pts_Occupation, Pts_GMF_Exp, Pts_Expn_Score, Pts_Income_vs_Expn, Pts_LTV,
+   Valida_Ingreso, Segmentation_Name (S01–S06 / S01 - SME),
+   Customer_ID_Masked (random hash only)
+4. PORTFOLIO_DETAIL (contract-level, status at Sep-2026)
+   Contract_ID, Dealer_ID, Seller_ID, Country, Purchase_Date, First_Due_Date, Cohort,
+   Cohort_Maturity (Closed / Open / Immature), Max_Possible_DPD,
+   Original_Finance_Amount (= Final_Finance_Amount), Installment_Amount, Current_Balance,
+   Payments_Made, Last_Payment_Date,
+   Contract_Status (Current / Delinquent / Potential ECO / Charged Off (ECO) /
+   Charged Off (Late) / Paid Off),
+   Days_Past_Due, DPD_Bucket (Current / 3–30 / 31–60 / 61–90 / 91–120 / 121–150 / +150),
+   Flag_ECO, ECO_Type (FPD/EPD), ECO_Period (YYYYMM), ECO_MOB, ECO_OSB,
+   Flag_Potential, Potential_Period (202610/202611/202612), Potential_OSB,
+   Late_Delinquency_Flag,
+   Ever30_2MOB, Ever30_3MOB, Ever30_6MOB, Ever30_9MOB, Ever60_6MOB, Ever60_9MOB
+   (0/1 flags; null when the contract has not reached that MOB at Sep-2026)
+5. PERFORMANCE_DETAIL (monthly snapshot per contract)
+   Snapshot_Month, Contract_ID, MOB, Days_Past_Due,
+   DPD_Bucket (Current / 3–30 / 31–60 / 61–90 / 91–120 / 121–150 / +150),
+   Installments_Due, Installments_Paid, Ever30, Ever60, Ever90, Over30, Over60, Over90, FPD_Flag
+   - Must be consistent with PORTFOLIO_DETAIL: ECOs reach 120+ at ECO_Period and keep
+     accruing DPD afterward; Potentials are in the bucket implied by Potential_Period at
+     Sep-2026; Jul–Aug 2026 cohorts never exceed 30 DPD; Days_Past_Due ≤ Max_Possible_DPD
+     in every snapshot; the Sep-2026 snapshot must match the DPD bucket targets by country.
+   - The Ever@MOB flags in PORTFOLIO_DETAIL must be reproducible from this monthly history,
+     and the vintage rates must match EARLY WARNING INDICATOR TARGETS.
+6. EARLY_LOSS_CASES (ECO and Potential contracts)
+   Contract_ID, Dealer_ID, Seller_ID, Country, Case_Type (ECO/Potential),
+   Detection_Date (first time ≥ 30 DPD), ChargeOff_Date or Potential_Period,
+   Fraud_Typology (country-specific mix above; also allow: Suplantación, Identidad falsa,
+   Vehículo para terceros, Reventa del vehículo, Empresa fachada, Fraude sintético),
+   Fraud_vs_Credit, Case_Status (Open/Under Review/Closed)
+   (No cases from Jul–Aug 2026 cohorts; late delinquency contracts are NOT included.)
+7. DEALER_ACTIONS (touchpoint log)
+   Action_ID, Dealer_ID, Seller_ID (optional), Action_Date, Action_Type
+   (Call/Visit/Seller Block/Segmentation Change/Pipeline Review/Monitor),
+   Trigger_Alert, Owner_Role, Status (Open/In Progress/Closed), Outcome (Improved/No Change/Worse)
+REALISM RULES
+- Ever flags are monotonic over time (once 1, always 1). Over flags can return to 0.
+- DPD must be consistent month to month (increase ~30 per month if unpaid,
+  reset/decrease if payments are made; charged-off contracts keep accruing).
+- Days_Past_Due can never exceed the days between First_Due_Date and the snapshot date,
+  and the DPD bucket can never exceed the cohort limit in MAXIMUM DPD BUCKET BY COHORT.
+- Ever30 > Ever60 > Ever90 ≥ ECO rate for every cohort from Jan-2025 to Jun-2026 and
+  country; Jul–Aug 2026 cohorts have Ever30 = Ever60 = Ever90 = 0.
+- Ever@MOB rates by vintage must match the tables in EARLY WARNING INDICATOR TARGETS
+  (±0.3 pp) and respect its consistency rules; Over30/60/90 at Sep-2026 must equal the
+  values derived from the DPD bucket targets.
+- DPD bucket distribution at Sep-2026 (all cohorts together) must match the country
+  targets; delinquency follows a seasoning curve (older cohorts more delinquent);
+  100% of ECOs in 121–150 / +150; 100% of Potentials in the bucket implied by
+  Potential_Period; remaining delinquent contracts flagged as Late_Delinquency_Flag = 1.
+- Chile risk levels must be clearly higher than Colombia (≈ 2.0% vs. ≈ 0.8% ECO rate).
+- Most dealers are healthy; dealer risk distribution must be skewed (few bad dealers).
+- Local_Tier: distribution by country AND customer type (individual / company) must match
+  the targets above; tier must be monotonic with GMF_Score; tier U only for companies;
+  B-, C- and D- tiers only in Chile.
+- Vehicle_Mix: distribution by country must match the targets above, and must be fully
+  consistent with Make_Desc, New_Used_Cd and Model_Type (e.g., NoGM/Used → USED NO GM).
+  Since MODEL_TYPE is a scorecard input in both countries, vehicle mix, segment mix and
+  tier mix must be generated jointly so all targets hold.
+- Chile: Fraud_Score must equal the sum of the 9 point fields, computed with original
+  application values; Model_Type must follow the ordered rule above; Risk_Segment and
+  Fraud_Treatment must be fully reproducible from the cut-offs (no random overrides);
+  Final_Down_Payment_Pct ≥ 40% for H02 and ≥ 30% for H03; H04 phone verified;
+  L06 address proof waived.
+- Colombia: Fraud_Score must equal the sum of the 7 point fields, and Risk_Segment,
+  Segmentation_Name, Risk_Classification and Fraud_Treatment must be fully reproducible
+  from the rules above (no random overrides).
+- Add small realistic noise and ~1–2% missing values in non-key fields
+  (never in activity, tier, vehicle, segment, treatment, DPD, Ever/Over or scorecard fields).
+PLANTED SCENARIOS (for the agent demo – must be detectable)
+1. Dealer "D001" (CL): ECO/Potential rate rises sharply in the last open cohorts
+   (May–Jun 2026), driven by 2 sellers (S0123, S0456) with H03–H04 segments and final
+   down payment at the minimum required.
+2. Dealer "D002" (CL): Ever60 increases +0.8 pp in the last month (gradual deterioration),
+   measured on cohorts up to Jun-2026.
+3. Dealer "D003" (CO): Top_Dealer_Ind = Y, Costa region, high ECO concentration (~17%)
+   but moderate ECO rate (large volume dealer).
+4. Seller "S0789": works at 2 dealers and appears in the top ECO concentration in both.
+5. Dealer "D004" (CO): FPD spike in SUV contracts (Tracker/Captiva) in the last open cohort
+   with enough maturity (Jun-2026), mostly Low/Medium segments (cases that the scorecard
+   did not flag as High).
+6. Dealer "D005": had an action (Seller Block) 3 months ago and shows improvement afterward.
+7. One small dealer with only 1 ECO and very few contracts (to test minimum-volume threshold).
+(Planted scenarios may move individual dealers away from the country average, but the
+country-level Ever@MOB targets must still hold.)
+OUTPUTS
+- 7 CSV files with the names above.
+- DATA_DICTIONARY: table, field, description, type, allowed values.
+- VALIDATION_SUMMARY:
+  - row counts per table;
+  - ECO rate and Potential rate by country and cohort vs. the targets above;
+  - average ECO rate of closed cohorts (CL ≈ 2.03%, CO ≈ 0.8%);
+  - Potential_Period / bucket distribution per open cohort and country;
+  - DPD bucket distribution at Sep-2026 by country (all cohorts) vs. targets;
+  - Over30 / Over60 / Over90 at Sep-2026 by country vs. targets
+    (CL 10.78% / 7.39% / 6.00%; CO 7.90% / 4.68% / 3.54%);
+  - Ever30@2/3/6/9 MOB and Ever60@6/9 MOB by country and vintage vs. targets
+    (achieved, target, difference in pp), plus the consistency-rule checks;
+  - Cohort × DPD_Bucket matrix by country, confirming no contract exceeds its cohort
+    maximum bucket and showing the seasoning curve (≥ 31 DPD share by cohort);
+  - DPD_Bucket × (ECO / Potential / Late delinquency / Performing) cross-table confirming
+    100% of ECOs in 121–150 / +150 and 100% of Potentials in 31–120;
+  - check that Jul–Aug 2026 cohorts have 0 ECOs, 0 Potentials and no contract above 30 DPD;
+  - Local_Tier distribution by country × customer type vs. targets, Local_Tier × GMF_Score
+    ranges (monotonicity check), and Local_Tier mix of ECO/Potential vs. portfolio;
+  - Vehicle_Mix distribution by country vs. targets, Vehicle_Mix × Model_Type cross-table
+    (100% consistency), and Vehicle_Mix of ECO/Potential vs. portfolio;
+  - Chile: Economic_Activity and Risk_Segment distribution vs. targets (portfolio and
+    ECO/Potential); Fraud_Score distribution; points distribution per scorecard variable;
+    Model_Type distribution and check that 100% of contracts have a Model_Type;
+    Segment × Treatment table; final down payment check for H02–H03 (100% compliance);
+    H01 funded only as policy exceptions; companies not scored;
+  - Colombia: Occupation and Segment distribution vs. targets; Fraud_Score distribution;
+    Valida_Ingreso × Risk_Segment table; Risk_Classification × Occupation × City_Match ×
+    Treatment table confirming 100% rule compliance (companies = S01 - SME, no segment);
+  - profile comparison ECO/Potential vs. late delinquency vs. good contracts per country;
+  - confirmation that each planted scenario is present.
+- Python code used to generate the data (with seed), so the team can regenerate it.
+PRIVACY
+Do not include names, national IDs (RUT/Cédula), phone numbers, emails, addresses,
+nationality, geolocation, documents, photos, audio, or free-text notes with personal information.
